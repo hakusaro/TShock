@@ -36,13 +36,14 @@ namespace TShockAPI
 	/// <summary>Bouncer is the TShock anti-hack and anti-cheat system.</summary>
 	internal sealed class Bouncer
 	{
-		internal Handlers.SendTileRectHandler STSHandler { get; set; }
-		internal Handlers.NetModules.NetModulePacketHandler NetModuleHandler { get; set; }
-		internal Handlers.EmojiHandler EmojiHandler { get; set; }
-		internal Handlers.DisplayDollItemSyncHandler DisplayDollItemSyncHandler { get; set; }
-		internal Handlers.RequestTileEntityInteractionHandler RequestTileEntityInteractionHandler { get; set; }
-		internal Handlers.LandGolfBallInCupHandler LandGolfBallInCupHandler { get; set; }
-		internal Handlers.SyncTilePickingHandler SyncTilePickingHandler { get; set; }
+		internal Handlers.SendTileRectHandler STSHandler { get; private set; }
+		internal Handlers.NetModules.NetModulePacketHandler NetModuleHandler { get; private set; }
+		internal Handlers.EmojiHandler EmojiHandler { get; private set; }
+		internal Handlers.IllegalPerSe.EmojiPlayerMismatch EmojiPlayerMismatch { get; private set; }
+		internal Handlers.DisplayDollItemSyncHandler DisplayDollItemSyncHandler { get; private set; }
+		internal Handlers.RequestTileEntityInteractionHandler RequestTileEntityInteractionHandler { get; private set; }
+		internal Handlers.LandGolfBallInCupHandler LandGolfBallInCupHandler { get; private set; }
+		internal Handlers.SyncTilePickingHandler SyncTilePickingHandler { get; private set; }
 
 		/// <summary>Constructor call initializes Bouncer and related functionality.</summary>
 		/// <returns>A new Bouncer.</returns>
@@ -53,6 +54,9 @@ namespace TShockAPI
 
 			NetModuleHandler = new Handlers.NetModules.NetModulePacketHandler();
 			GetDataHandlers.ReadNetModule += NetModuleHandler.OnReceive;
+
+			EmojiPlayerMismatch = new Handlers.IllegalPerSe.EmojiPlayerMismatch();
+			GetDataHandlers.Emoji += EmojiPlayerMismatch.OnReceive;
 
 			EmojiHandler = new Handlers.EmojiHandler();
 			GetDataHandlers.Emoji += EmojiHandler.OnReceive;
@@ -256,20 +260,19 @@ namespace TShockAPI
 
 			try
 			{
+				if (!TShock.Utils.TilePlacementValid(tileX, tileY))
+				{
+					TShock.Log.ConsoleDebug("Bouncer / OnTileEdit rejected from (tile placement valid) {0} {1} {2}", args.Player.Name, action, editData);
+					args.Handled = true;
+					return;
+				}
+
 				if (editData < 0 ||
 					((action == EditAction.PlaceTile || action == EditAction.ReplaceTile) && editData >= Main.maxTileSets) ||
 					((action == EditAction.PlaceWall || action == EditAction.ReplaceWall) && editData >= Main.maxWallTypes))
 				{
 					TShock.Log.ConsoleDebug("Bouncer / OnTileEdit rejected from editData out of bounds {0} {1} {2}", args.Player.Name, action, editData);
 					args.Player.SendTileSquare(tileX, tileY, 4);
-					args.Handled = true;
-					return;
-				}
-
-				if (!TShock.Utils.TilePlacementValid(tileX, tileY))
-				{
-					TShock.Log.ConsoleDebug("Bouncer / OnTileEdit rejected from (tile placement valid) {0} {1} {2}", args.Player.Name, action, editData);
-					args.Player.SendTileSquare(tileX, tileY, 1);
 					args.Handled = true;
 					return;
 				}
@@ -304,10 +307,11 @@ namespace TShockAPI
 						return;
 					}
 
-					if (selectedItem.placeStyle != style)
+					if ((args.Player.TPlayer.BiomeTorchHoldStyle(style) != args.Player.TPlayer.BiomeTorchPlaceStyle(style))
+					&& (selectedItem.placeStyle != style))
 					{
-						TShock.Log.ConsoleError(string.Format("Bouncer / OnTileEdit rejected from (placestyle) {0} {1} {2} placeStyle: {3} expectedStyle: {4}",
-							args.Player.Name, action, editData, style, selectedItem.placeStyle));
+						TShock.Log.ConsoleError("Bouncer / OnTileEdit rejected from (placestyle) {0} {1} {2} placeStyle: {3} expectedStyle: {4}",
+							args.Player.Name, action, editData, style, selectedItem.placeStyle);
 						args.Player.SendTileSquare(tileX, tileY, 1);
 						args.Handled = true;
 						return;
@@ -1537,7 +1541,7 @@ namespace TShockAPI
 				if (npc.townNPC && npc.netID != NPCID.Guide && npc.netID != NPCID.Clothier)
 				{
 					if (type != BuffID.Lovestruck && type != BuffID.Stinky && type != BuffID.DryadsWard &&
-						type != BuffID.Wet && type != BuffID.Slimed && type != BuffID.GelBalloonBuff)
+						type != BuffID.Wet && type != BuffID.Slimed && type != BuffID.GelBalloonBuff && type != BuffID.Frostburn2)
 					{
 						detectedNPCBuffTimeCheat = true;
 					}
@@ -1550,8 +1554,8 @@ namespace TShockAPI
 
 			if (detectedNPCBuffTimeCheat)
 			{
-				TShock.Log.ConsoleDebug("Bouncer / OnNPCAddBuff rejected abnormal buff ({1}) from {0}", args.Player.Name, type);
-				args.Player.Kick($"Added buff to NPC abnormally.", true);
+				TShock.Log.ConsoleDebug("Bouncer / OnNPCAddBuff rejected abnormal buff ({0}) added to {1} ({2}) from {3}.", type, npc.TypeName, npc.netID, args.Player.Name);
+				args.Player.Kick($"Added buff to {npc.TypeName} NPC abnormally.", true);
 				args.Handled = true;
 			}
 		}
@@ -1649,6 +1653,13 @@ namespace TShockAPI
 			short type = args.Type;
 			short style = args.Style;
 
+			if (!TShock.Utils.TilePlacementValid(x, y))
+			{
+				TShock.Log.ConsoleDebug("Bouncer / OnPlaceObject rejected valid placements from {0}", args.Player.Name);
+				args.Handled = true;
+				return;
+			}
+
 			if (type < 0 || type >= Main.maxTileSets)
 			{
 				TShock.Log.ConsoleDebug("Bouncer / OnPlaceObject rejected out of bounds tile from {0}", args.Player.Name);
@@ -1693,14 +1704,6 @@ namespace TShockAPI
 				TShock.Log.ConsoleDebug("Bouncer / OnPlaceObject rejected banned tiles from {0}", args.Player.Name);
 				args.Player.SendTileSquare(x, y, 1);
 				args.Player.SendErrorMessage("You do not have permission to place this tile.");
-				args.Handled = true;
-				return;
-			}
-
-			if (!TShock.Utils.TilePlacementValid(x, y))
-			{
-				TShock.Log.ConsoleDebug("Bouncer / OnPlaceObject rejected valid placements from {0}", args.Player.Name);
-				args.Player.SendTileSquare(x, y, 1);
 				args.Handled = true;
 				return;
 			}
@@ -1796,6 +1799,13 @@ namespace TShockAPI
 		/// <param name="args">The packet arguments that the event has.</param>
 		internal void OnPlaceTileEntity(object sender, GetDataHandlers.PlaceTileEntityEventArgs args)
 		{
+			if (!TShock.Utils.TilePlacementValid(args.X, args.Y))
+			{
+				TShock.Log.ConsoleDebug("Bouncer / OnPlaceTileEntity rejected tile placement valid from {0}", args.Player.Name);
+				args.Handled = true;
+				return;
+			}
+
 			if (args.Player.IsBeingDisabled())
 			{
 				TShock.Log.ConsoleDebug("Bouncer / OnPlaceTileEntity rejected disabled from {0}", args.Player.Name);
@@ -1823,6 +1833,13 @@ namespace TShockAPI
 		/// <param name="args">The packet arguments that the event has.</param>
 		internal void OnPlaceItemFrame(object sender, GetDataHandlers.PlaceItemFrameEventArgs args)
 		{
+			if (!TShock.Utils.TilePlacementValid(args.X, args.Y))
+			{
+				TShock.Log.ConsoleDebug("Bouncer / OnPlaceItemFrame rejected tile placement valid from {0}", args.Player.Name);
+				args.Handled = true;
+				return;
+			}
+
 			if (args.Player.IsBeingDisabled())
 			{
 				TShock.Log.ConsoleDebug("Bouncer / OnPlaceItemFrame rejected disabled from {0}", args.Player.Name);
@@ -2124,6 +2141,13 @@ namespace TShockAPI
 		/// <param name="args"></param>
 		internal void OnFoodPlatterTryPlacing(object sender, GetDataHandlers.FoodPlatterTryPlacingEventArgs args)
 		{
+			if (!TShock.Utils.TilePlacementValid(args.TileX, args.TileY))
+			{
+				TShock.Log.ConsoleDebug("Bouncer / OnFoodPlatterTryPlacing rejected tile placement valid from {0}", args.Player.Name);
+				args.Handled = true;
+				return;
+			}
+
 			if ((args.Player.SelectedItem.type != args.ItemID && args.Player.ItemInHand.type != args.ItemID))
 			{
 				TShock.Log.ConsoleDebug("Bouncer / OnFoodPlatterTryPlacing rejected item not placed by hand from {0}", args.Player.Name);
